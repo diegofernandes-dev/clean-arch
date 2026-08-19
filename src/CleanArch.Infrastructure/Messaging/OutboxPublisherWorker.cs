@@ -21,8 +21,7 @@ internal sealed class OutboxPublisherWorker(
         {
             try
             {
-                await PublishPendingAsync(stoppingToken);
-                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                await RunPublisherAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -30,13 +29,13 @@ internal sealed class OutboxPublisherWorker(
             }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "Outbox publishing cycle failed");
+                logger.LogWarning(exception, "Outbox publisher disconnected; retrying");
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }
     }
 
-    private async Task PublishPendingAsync(CancellationToken cancellationToken)
+    private async Task RunPublisherAsync(CancellationToken cancellationToken)
     {
         await using var connection = await connectionFactory.CreateConnectionAsync(
             "clean-arch-outbox",
@@ -68,32 +67,37 @@ internal sealed class OutboxPublisherWorker(
             RoutingKey,
             cancellationToken: cancellationToken);
 
-        var pending = await ClaimPendingAsync(cancellationToken);
-
-        foreach (var message in pending)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            var properties = new BasicProperties
+            var pending = await ClaimPendingAsync(cancellationToken);
+
+            foreach (var message in pending)
             {
-                Persistent = true,
-                ContentType = "application/json",
-                MessageId = message.Id.ToString(),
-                Type = message.EventType
-            };
+                var properties = new BasicProperties
+                {
+                    Persistent = true,
+                    ContentType = "application/json",
+                    MessageId = message.Id.ToString(),
+                    Type = message.EventType
+                };
 
-            await channel.BasicPublishAsync(
-                Exchange,
-                RoutingKey,
-                mandatory: true,
-                basicProperties: properties,
-                body: Encoding.UTF8.GetBytes(message.Payload),
-                cancellationToken: cancellationToken);
+                await channel.BasicPublishAsync(
+                    Exchange,
+                    RoutingKey,
+                    mandatory: true,
+                    basicProperties: properties,
+                    body: Encoding.UTF8.GetBytes(message.Payload),
+                    cancellationToken: cancellationToken);
 
-            await MarkProcessedAsync(message.Id, message.LockId, cancellationToken);
+                await MarkProcessedAsync(message.Id, message.LockId, cancellationToken);
 
-            logger.LogInformation(
-                "Published outbox event {EventType} with MessageId {MessageId}",
-                message.EventType,
-                message.Id);
+                logger.LogInformation(
+                    "Published outbox event {EventType} with MessageId {MessageId}",
+                    message.EventType,
+                    message.Id);
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
         }
     }
 
