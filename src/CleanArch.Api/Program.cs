@@ -1,12 +1,16 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using Asp.Versioning;
 using CleanArch.Api.Endpoints;
 using CleanArch.Api.ExceptionHandling;
+using CleanArch.Api.Observability;
 using CleanArch.Application;
 using CleanArch.Infrastructure;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Timeouts;
+using Microsoft.Extensions.Compliance.Redaction;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Telemetry;
 using Scalar.AspNetCore;
 using Serilog;
 
@@ -20,10 +24,21 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    builder.Logging.EnableRedaction(options =>
+    {
+        options.ApplyDiscriminator = true;
+    });
+
+    // Classified values are erased by default. A reversible/correlatable redactor is
+    // intentionally not configured for this financial baseline.
+    builder.Services.AddRedaction();
+
     builder.Services.AddSerilog((services, loggerConfiguration) => loggerConfiguration
         .ReadFrom.Configuration(builder.Configuration)
         .ReadFrom.Services(services)
         .Enrich.FromLogContext());
+
+    builder.Services.AddFinancialObservability(builder.Configuration);
 
     builder.Services.ConfigureHttpJsonOptions(options =>
         options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -32,7 +47,8 @@ try
     {
         options.CustomizeProblemDetails = context =>
         {
-            context.ProblemDetails.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
+            context.ProblemDetails.Extensions["traceId"] =
+                Activity.Current?.TraceId.ToString() ?? context.HttpContext.TraceIdentifier;
         };
     });
 
@@ -75,7 +91,10 @@ try
         {
             diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
             diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme);
-            diagnosticContext.Set("TraceId", httpContext.TraceIdentifier);
+            diagnosticContext.Set(
+                "TraceId",
+                Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier);
+            diagnosticContext.Set("SpanId", Activity.Current?.SpanId.ToString());
         };
     });
 
