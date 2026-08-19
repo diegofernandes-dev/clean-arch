@@ -91,6 +91,25 @@ A global ASP.NET Core request-timeout policy defaults to 2 seconds and propagate
 
 Request/response bodies are deliberately not logged. Serilog request logging records structured request metadata and trace IDs, while the outbox worker logs only event type and message ID—not event payloads.
 
+## Performance & capacity engineering
+
+The repository includes a formal capacity-engineering methodology in [`docs/PERFORMANCE-CAPACITY-PLAN.md`](docs/PERFORMANCE-CAPACITY-PLAN.md).
+
+Its purpose is to determine, from measurements rather than convention:
+
+- minimum resources required to satisfy a workload SLO;
+- safe RPS per replica;
+- knee and breaking point of the latency curve;
+- first saturated component;
+- whether more CPU/memory actually buys useful capacity;
+- horizontal scaling efficiency;
+- evidence-based HPA targets;
+- capacity efficiency before increasing infrastructure cost.
+
+Every formally characterized workload should produce a versioned profile using [`docs/templates/CAPACITY-PROFILE.md`](docs/templates/CAPACITY-PROFILE.md).
+
+The next implementation milestone is to automate the methodology with arrival-rate load scenarios, initially for the ledger write/read workloads.
+
 ## Health
 
 ```text
@@ -100,4 +119,4 @@ GET /health/ready
 
 ## What is intentionally not included yet
 
-Authentication/authorization, OpenTelemetry exporters, data-classification/redaction packages, distributed caching, rate limiting, external secret stores and a business consumer are intentionally left out until explicitly selected for the template.
+Authentication/authorization, distributed caching, application-level rate limiting, external secret stores and a business consumer are intentionally left out until explicitly selected for the template.
