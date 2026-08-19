@@ -1,107 +1,103 @@
-# Clean Architecture WeatherForecast (.NET 10)
+# Financial Clean Architecture API
 
-A deliberately small example showing how to combine Clean Architecture, CQRS, Minimal APIs, LanguageExt, RFC 7807-style Problem Details, centralized exception handling, API versioning, health checks, Scalar, and structured Serilog logging without turning the classic `WeatherForecast` sample into a framework.
+A .NET 10 reference API that starts with the classic WeatherForecast example and evolves it toward a financial-service baseline.
 
 ## Architecture
 
 ```text
-HTTP
-  |
-  v
-CleanArch.Api
-  |  Minimal API / versioning / ProblemDetails / exception boundary
-  v
-CleanArch.Application
-  |  CQRS contracts + use cases + typed expected errors
-  v
-CleanArch.Domain
-
-CleanArch.Infrastructure -> CleanArch.Application
-  implements application ports
+API
+  -> Application (CQRS + LanguageExt Either)
+      -> Domain
+      -> Infrastructure ports
+          -> PostgreSQL
+          -> RabbitMQ
 ```
 
-Dependencies point inward:
+The sample intentionally avoids MediatR and framework-style abstractions. Expected failures use `Either<ApplicationError,T>`; unexpected failures flow through `IExceptionHandler` and Problem Details.
 
-- `Domain` has no dependency on ASP.NET Core, LanguageExt, logging, or infrastructure.
-- `Application` owns use cases and ports. Expected failures are returned as `Either<ApplicationError, T>`.
-- `Infrastructure` implements application ports.
-- `Api` translates HTTP to application requests and application results back to HTTP.
+## Financial ledger
 
-## Error model
+The ledger implements double-entry journal transactions:
 
-Expected failures use typed values:
+- at least two entries;
+- positive amounts only;
+- one currency per transaction;
+- total debits must equal total credits;
+- database constraints also enforce account/transaction currency and balanced postings;
+- every POST requires `Idempotency-Key`;
+- reusing a key with a different request returns `409 Conflict`.
 
-```text
-Validation / NotFound / Conflict / Forbidden
-                  |
-                  v
-     Either<ApplicationError, T>
-                  |
-                  v
-             ProblemDetails
-```
+The ledger write and its integration event are persisted atomically in PostgreSQL. A transactional outbox worker later publishes `ledger.transaction.posted` to RabbitMQ using publisher confirms. Outbox claiming uses `FOR UPDATE SKIP LOCKED`, so multiple API replicas can safely run workers. Delivery is intentionally **at least once**; consumers must be idempotent.
 
-Unexpected failures use exceptions:
-
-```text
-Exception -> IExceptionHandler -> 500 ProblemDetails
-```
-
-This keeps exceptions out of normal application control flow.
-
-## CQRS
-
-The sample intentionally does **not** use MediatR. CQRS is represented by small interfaces:
-
-- `IQuery<TResponse>` / `IQueryHandler<TQuery, TResponse>`
-- `ICommand<TResponse>` / `ICommandHandler<TCommand, TResponse>`
-
-The endpoint injects the appropriate handler directly. A mediator can be added later if pipeline behaviors become a real requirement.
-
-## Run
-
-Requires the .NET 10 SDK.
+## Local stack
 
 ```bash
-dotnet restore
-dotnet build --configuration Release
-dotnet test --configuration Release
-dotnet run --project src/CleanArch.Api
+docker compose up --build
 ```
 
-## Endpoints
+Services:
 
-### WeatherForecast v1
+- API: `http://localhost:8080`
+- Scalar: `http://localhost:8080/scalar/v1`
+- PostgreSQL: `localhost:5432`
+- RabbitMQ AMQP: `localhost:5672`
+- RabbitMQ management: `http://localhost:15672` (`ledger` / `ledger`)
 
-```http
-GET /api/v1/weather?days=5
+Readiness checks PostgreSQL and RabbitMQ. Liveness only checks the process.
+
+## Seed accounts
+
+The Docker database initializes two BRL accounts:
+
+| Account | ID |
+|---|---|
+| CUSTOMER-CASH | `11111111-1111-1111-1111-111111111111` |
+| MERCHANT-SETTLEMENT | `22222222-2222-2222-2222-222222222222` |
+
+## Post a ledger transaction
+
+```bash
+curl -i http://localhost:8080/api/v1/ledger/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: payment-0001' \
+  -d '{
+    "reference": "payment-0001",
+    "description": "Merchant settlement",
+    "currency": "BRL",
+    "entries": [
+      {
+        "accountId": "22222222-2222-2222-2222-222222222222",
+        "direction": "Debit",
+        "amount": 100.00
+      },
+      {
+        "accountId": "11111111-1111-1111-1111-111111111111",
+        "direction": "Credit",
+        "amount": 100.00
+      }
+    ]
+  }'
 ```
 
-Optional query parameters:
+Query it with:
 
-- `from`: start date (`yyyy-MM-dd`)
-- `days`: number of days, from 1 to 14
+```bash
+curl http://localhost:8080/api/v1/ledger/transactions/{transactionId}
+```
 
-### Health checks
+## SLA-oriented behavior
+
+A global ASP.NET Core request-timeout policy defaults to 2 seconds and propagates cancellation through endpoint, handler and PostgreSQL calls. The value is configurable with `RequestTimeouts__DefaultMilliseconds`.
+
+Request/response bodies are deliberately not logged. Serilog request logging records structured request metadata and trace IDs, while the outbox worker logs only event type and message ID—not event payloads.
+
+## Health
 
 ```text
 GET /health/live
 GET /health/ready
 ```
 
-### OpenAPI and Scalar
+## What is intentionally not included yet
 
-In `Development`:
-
-```text
-/openapi/v1.json
-/scalar/v1
-```
-
-## Structured logging
-
-Serilog is configured from `appsettings.json`, enriches request completion events, and outputs JSON to stdout.
-
-## Intentional omissions
-
-The sample intentionally does not add MediatR, FluentValidation, EF Core, repositories, resilience policies, authentication, authorization, Docker/Kubernetes manifests, architecture-test libraries, or observability exporters. Those should be introduced only when the example has a requirement that justifies them.
+Authentication/authorization, OpenTelemetry exporters, data-classification/redaction packages, distributed caching, rate limiting, external secret stores and a business consumer are intentionally left out until explicitly selected for the template.

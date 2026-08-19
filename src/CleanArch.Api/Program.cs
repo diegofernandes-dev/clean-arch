@@ -1,9 +1,11 @@
+using System.Text.Json.Serialization;
 using Asp.Versioning;
 using CleanArch.Api.Endpoints;
 using CleanArch.Api.ExceptionHandling;
 using CleanArch.Application;
 using CleanArch.Infrastructure;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Scalar.AspNetCore;
 using Serilog;
@@ -23,6 +25,9 @@ try
         .ReadFrom.Services(services)
         .Enrich.FromLogContext());
 
+    builder.Services.ConfigureHttpJsonOptions(options =>
+        options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
     builder.Services.AddProblemDetails(options =>
     {
         options.CustomizeProblemDetails = context =>
@@ -32,6 +37,16 @@ try
     });
 
     builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+    builder.Services.AddRequestTimeouts(options =>
+    {
+        options.DefaultPolicy = new RequestTimeoutPolicy
+        {
+            Timeout = TimeSpan.FromMilliseconds(
+                builder.Configuration.GetValue("RequestTimeouts:DefaultMilliseconds", 2000)),
+            TimeoutStatusCode = StatusCodes.Status504GatewayTimeout
+        };
+    });
 
     builder.Services.AddApiVersioning(options =>
     {
@@ -47,11 +62,12 @@ try
         .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"]);
 
     builder.Services.AddApplication();
-    builder.Services.AddInfrastructure();
+    builder.Services.AddInfrastructure(builder.Configuration);
 
     var app = builder.Build();
 
     app.UseExceptionHandler();
+    app.UseRequestTimeouts();
 
     app.UseSerilogRequestLogging(options =>
     {
@@ -70,13 +86,13 @@ try
 
     app.MapHealthChecks("/health/ready", new HealthCheckOptions
     {
-        Predicate = _ => true
+        Predicate = registration => registration.Tags.Contains("ready")
     });
 
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();
-        app.MapScalarApiReference(options => options.WithTitle("Clean Architecture API"));
+        app.MapScalarApiReference(options => options.WithTitle("Financial Clean Architecture API"));
     }
 
     var versionSet = app.NewApiVersionSet()
@@ -85,6 +101,7 @@ try
         .Build();
 
     app.MapWeatherEndpoints(versionSet);
+    app.MapLedgerEndpoints(versionSet);
 
     await app.RunAsync();
 }
