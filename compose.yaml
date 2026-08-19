@@ -11,6 +11,8 @@ services:
       RabbitMq__UserName: ledger
       RabbitMq__Password: ledger
       RequestTimeouts__DefaultMilliseconds: 2000
+      OpenTelemetry__ServiceName: clean-arch-financial-api
+      OpenTelemetry__OtlpEndpoint: http://otel-collector:4317
     ports:
       - "8080:8080"
     depends_on:
@@ -18,6 +20,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   postgres:
     image: postgres:17-alpine
@@ -49,6 +53,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./docker/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
 
 volumes:
   postgres-data:
