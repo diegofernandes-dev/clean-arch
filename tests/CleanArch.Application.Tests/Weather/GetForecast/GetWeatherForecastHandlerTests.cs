@@ -1,6 +1,7 @@
 using CleanArch.Application.Abstractions.Weather;
 using CleanArch.Application.Common.Errors;
 using CleanArch.Application.Weather.GetForecast;
+using Xunit;
 
 namespace CleanArch.Application.Tests.Weather.GetForecast;
 
